@@ -230,6 +230,38 @@ def download_image_fast(img_url, img_id, download_dir):
             print(f"Failed to download {img_url}: {e}")
         return None
 
+def download_images_batch_with_progress(image_list, download_dir, progress_callback, max_workers=5):
+    """
+    Download multiple images concurrently with progress tracking
+    """
+    downloaded_files = []
+    total_images = len(image_list)
+    completed_downloads = 0
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_img = {
+            executor.submit(download_image_fast, img_src, img_id, download_dir): (img_id, img_src)
+            for img_id, img_src in image_list
+        }
+        
+        for future in as_completed(future_to_img):
+            img_id, img_src = future_to_img[future]
+            try:
+                filepath = future.result()
+                if filepath:
+                    downloaded_files.append((img_id, filepath))
+                completed_downloads += 1
+                
+                # Progress update
+                download_progress = 80 + (completed_downloads / total_images) * 10  # 80-90%
+                progress_callback("downloading", download_progress, f"이미지 다운로드 중: {completed_downloads}/{total_images}")
+                
+            except Exception as e:
+                print(f"Error downloading {img_id}: {e}")
+                completed_downloads += 1
+    
+    return downloaded_files
+
 def download_images_batch(image_list, download_dir, max_workers=5):
     """
     Download multiple images concurrently
@@ -298,6 +330,133 @@ def get_visible_page_images(driver, element_type="main_page"):
     except Exception as e:
         print(f"Error getting visible images: {e}")
         return []
+
+def scroll_and_download_images_with_progress(driver, progress_callback, scroll_delay=2, element_type="main_page", url=None):
+    """
+    Scroll viewport by viewport, collect all images, then download in batches with progress tracking
+    """
+    all_images_to_download = []
+    downloaded_image_ids = set()
+    
+    print("Starting viewport-by-viewport scrolling to collect images...")
+    progress_callback("scrolling", 15, "스크롤링을 시작합니다...")
+    
+    if element_type == "contents_div":
+        contents_div = driver.find_element(By.ID, "contents")
+        viewport_height = driver.execute_script("return arguments[0].clientHeight", contents_div)
+        scroll_script = f"arguments[0].scrollTop += {viewport_height}"
+        current_scroll_script = "return arguments[0].scrollTop"
+        max_scroll_script = "return arguments[0].scrollHeight - arguments[0].clientHeight"
+        
+        while True:
+            # Collect visible images
+            visible_imgs = get_visible_page_images(driver, element_type)
+            for img_id, img_src in visible_imgs:
+                if img_id not in downloaded_image_ids:
+                    all_images_to_download.append((img_id, img_src))
+                    downloaded_image_ids.add(img_id)
+            
+            # Check if we've reached the bottom
+            current_scroll = driver.execute_script(current_scroll_script, contents_div)
+            max_scroll = driver.execute_script(max_scroll_script, contents_div)
+            
+            # Progress update during scrolling
+            scroll_progress = min(80, 15 + (current_scroll / max_scroll) * 65)
+            progress_callback("scrolling", scroll_progress, f"스크롤 진행 중: {current_scroll}/{max_scroll}")
+            
+            if current_scroll >= max_scroll:
+                print("Reached bottom of contents div!")
+                break
+            
+            # Scroll by viewport height
+            driver.execute_script(scroll_script, contents_div)
+            time.sleep(scroll_delay)
+            
+            new_scroll = driver.execute_script(current_scroll_script, contents_div)
+            print(f"Scrolled to: {new_scroll}/{max_scroll}")
+    
+    elif element_type == "iframe_contents_div":
+        contents_div = driver.find_element(By.ID, "contents")
+        viewport_height = driver.execute_script("return arguments[0].clientHeight", contents_div)
+        scroll_script = f"arguments[0].scrollTop += {viewport_height}"
+        current_scroll_script = "return arguments[0].scrollTop"
+        max_scroll_script = "return arguments[0].scrollHeight - arguments[0].clientHeight"
+        
+        while True:
+            # Collect visible images
+            visible_imgs = get_visible_page_images(driver, element_type)
+            for img_id, img_src in visible_imgs:
+                if img_id not in downloaded_image_ids:
+                    all_images_to_download.append((img_id, img_src))
+                    downloaded_image_ids.add(img_id)
+            
+            # Check if we've reached the bottom
+            current_scroll = driver.execute_script(current_scroll_script, contents_div)
+            max_scroll = driver.execute_script(max_scroll_script, contents_div)
+            
+            # Progress update during scrolling
+            scroll_progress = min(80, 15 + (current_scroll / max_scroll) * 65)
+            progress_callback("scrolling", scroll_progress, f"iframe 스크롤 진행 중: {current_scroll}/{max_scroll}")
+            
+            if current_scroll >= max_scroll:
+                print("Reached bottom of iframe contents div!")
+                break
+            
+            # Scroll by viewport height
+            driver.execute_script(scroll_script, contents_div)
+            time.sleep(scroll_delay)
+            
+            new_scroll = driver.execute_script(current_scroll_script, contents_div)
+            print(f"Scrolled to: {new_scroll}/{max_scroll}")
+    
+    else:  # iframe or main_page
+        viewport_height = driver.execute_script("return window.innerHeight")
+        scroll_script = f"window.scrollBy(0, {viewport_height})"
+        
+        while True:
+            # Collect visible images
+            visible_imgs = get_visible_page_images(driver, element_type)
+            for img_id, img_src in visible_imgs:
+                if img_id not in downloaded_image_ids:
+                    all_images_to_download.append((img_id, img_src))
+                    downloaded_image_ids.add(img_id)
+            
+            # Check if we've reached the bottom
+            current_scroll = driver.execute_script("return window.pageYOffset")
+            max_scroll = driver.execute_script("return document.body.scrollHeight - window.innerHeight")
+            
+            # Progress update during scrolling
+            scroll_progress = min(80, 15 + (current_scroll / max_scroll) * 65)
+            progress_callback("scrolling", scroll_progress, f"페이지 스크롤 진행 중: {current_scroll}/{max_scroll}")
+            
+            if current_scroll >= max_scroll:
+                print("Reached bottom of page!")
+                break
+            
+            # Scroll by viewport height
+            driver.execute_script(scroll_script)
+            time.sleep(scroll_delay)
+            
+            new_scroll = driver.execute_script("return window.pageYOffset")
+            print(f"Scrolled to: {new_scroll}/{max_scroll}")
+    
+    print(f"\nFound {len(all_images_to_download)} unique images to download")
+    progress_callback("downloading", 80, f"{len(all_images_to_download)}개의 이미지를 다운로드하는 중...")
+    
+    if all_images_to_download:
+        # Generate timestamp-based paths with hash
+        images_dir, pdf_path = get_timestamp_paths(url or "unknown")
+        
+        print(f"Creating directories...")
+        print(f"Images will be saved to: {images_dir}")
+        print(f"PDF will be saved to: {pdf_path}")
+        
+        print("Starting batch download...")
+        downloaded_files = download_images_batch_with_progress(all_images_to_download, images_dir, progress_callback)
+        
+        return downloaded_files
+    
+    return []
 
 def scroll_and_download_images(driver, scroll_delay=2, element_type="main_page", url=None):
     """
@@ -418,6 +577,76 @@ def scroll_and_download_images(driver, scroll_delay=2, element_type="main_page",
     
     return []
 
+def create_pdf_from_images_with_progress(downloaded_files, output_path, progress_callback):
+    """
+    Create PDF from downloaded images in page order with progress tracking
+    """
+    try:
+        # Create PDF directory if it doesn't exist
+        pdf_dir = os.path.dirname(output_path)
+        if not os.path.exists(pdf_dir):
+            os.makedirs(pdf_dir, exist_ok=True)
+        
+        # Sort files by page number
+        def extract_page_number(item):
+            img_id, filepath = item
+            match = re.search(r'page(\d+)', img_id)
+            return int(match.group(1)) if match else 999999
+        
+        sorted_files = sorted(downloaded_files, key=extract_page_number)
+        
+        if not sorted_files:
+            return None
+        
+        total_pages = len(sorted_files)
+        progress_callback("creating_pdf", 90, f"PDF 생성 중: 0/{total_pages} 페이지")
+        
+        # Create PDF
+        c = canvas.Canvas(output_path, pagesize=A4)
+        page_width, page_height = A4
+        
+        for i, (img_id, filepath) in enumerate(sorted_files):
+            try:
+                # Open and resize image if needed
+                with Image.open(filepath) as img:
+                    img_width, img_height = img.size
+                    
+                    # Calculate scaling to fit page while maintaining aspect ratio
+                    scale_w = page_width / img_width
+                    scale_h = page_height / img_height
+                    scale = min(scale_w, scale_h) * 0.9  # Leave some margin
+                    
+                    new_width = img_width * scale
+                    new_height = img_height * scale
+                    
+                    # Center image on page
+                    x = (page_width - new_width) / 2
+                    y = (page_height - new_height) / 2
+                    
+                    # Add image to PDF
+                    c.drawImage(filepath, x, y, width=new_width, height=new_height)
+                    c.showPage()
+                    
+                    print(f"Added {img_id} to PDF")
+                    
+                    # Progress update
+                    pdf_progress = 90 + ((i + 1) / total_pages) * 9  # 90-99%
+                    progress_callback("creating_pdf", pdf_progress, f"PDF 생성 중: {i + 1}/{total_pages} 페이지")
+                    
+            except Exception as e:
+                print(f"Failed to add {img_id} to PDF: {e}")
+                continue
+        
+        c.save()
+        print(f"PDF saved with {len(sorted_files)} pages")
+        progress_callback("creating_pdf", 99, f"PDF 저장 완료: {len(sorted_files)} 페이지")
+        return output_path
+        
+    except Exception as e:
+        print(f"Failed to create PDF: {e}")
+        progress_callback("error", 0, f"PDF 생성 실패: {str(e)}")
+        return None
+
 def create_pdf_from_images(downloaded_files, output_path):
     """
     Create PDF from downloaded images in page order
@@ -479,6 +708,111 @@ def create_pdf_from_images(downloaded_files, output_path):
         print(f"Failed to create PDF: {e}")
         return None
 
+def scroll_and_download_from_url_with_progress(url, progress_callback, scroll_delay=2, headless=True, keep_browser_open=False):
+    """
+    Scroll through a webpage and download all page images as PDF with progress tracking
+    
+    Args:
+        url (str): URL to process
+        progress_callback (callable): Function to call with progress updates
+        scroll_delay (float): Delay between scroll actions in seconds
+        headless (bool): Run browser in headless mode
+        keep_browser_open (bool): Keep browser open after completion
+        
+    Returns:
+        dict: Result containing downloaded files info and PDF path
+        {
+            'success': bool,
+            'images_dir': str,
+            'pdf_path': str,
+            'downloaded_count': int,
+            'error': str (if success=False)
+        }
+    """
+    
+    chrome_options = Options()
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    
+    # Use Chromium binary path in Docker
+    chrome_bin = os.environ.get('CHROME_BIN', '/usr/bin/chromium')
+    if os.path.exists(chrome_bin):
+        chrome_options.binary_location = chrome_bin
+    
+    if headless:
+        chrome_options.add_argument("--headless")
+    
+    driver = None
+    try:
+        # Try to use system ChromeDriver first
+        chromedriver_path = os.environ.get('CHROMEDRIVER_PATH', '/usr/bin/chromedriver')
+        if os.path.exists(chromedriver_path):
+            service = Service(chromedriver_path)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+        else:
+            driver = webdriver.Chrome(options=chrome_options)
+        
+        progress_callback("loading", 5, "웹페이지를 로딩 중...")
+        print(f"Opening URL: {url}")
+        driver.get(url)
+        
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        
+        time.sleep(3)
+        progress_callback("analyzing", 10, "페이지 구조를 분석 중...")
+        
+        element_type = find_scrollable_element(driver)
+        
+        progress_callback("scrolling", 15, "스크롤링을 시작합니다...")
+        downloaded_files = scroll_and_download_images_with_progress(driver, progress_callback, scroll_delay, element_type, url)
+        
+        if keep_browser_open:
+            print("Browser kept open. Close manually when done.")
+        else:
+            driver.quit()
+            driver = None
+        
+        if downloaded_files:
+            progress_callback("creating_pdf", 90, "PDF를 생성하는 중...")
+            images_dir, pdf_path = get_timestamp_paths(url)
+            final_pdf_path = create_pdf_from_images_with_progress(downloaded_files, pdf_path, progress_callback)
+            if final_pdf_path:
+                progress_callback("completed", 100, f"PDF 생성 완료: {final_pdf_path}")
+                print(f"PDF created: {final_pdf_path}")
+            return {
+                'success': True,
+                'images_dir': images_dir,
+                'pdf_path': final_pdf_path,
+                'downloaded_count': len(downloaded_files),
+                'error': None
+            }
+        else:
+            return {
+                'success': False,
+                'images_dir': None,
+                'pdf_path': None,
+                'downloaded_count': 0,
+                'error': 'No images found to download'
+            }
+        
+    except Exception as e:
+        error_msg = f"Error occurred: {e}"
+        progress_callback("error", 0, error_msg)
+        print(error_msg)
+        return {
+            'success': False,
+            'images_dir': None,
+            'pdf_path': None,
+            'downloaded_count': 0,
+            'error': error_msg
+        }
+        
+    finally:
+        if driver:
+            driver.quit()
+
 def scroll_and_download_from_url(url, scroll_delay=2, headless=True, keep_browser_open=False):
     """
     Scroll through a webpage and download all page images as PDF
@@ -504,12 +838,23 @@ def scroll_and_download_from_url(url, scroll_delay=2, headless=True, keep_browse
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     
+    # Use Chromium binary path in Docker
+    chrome_bin = os.environ.get('CHROME_BIN', '/usr/bin/chromium')
+    if os.path.exists(chrome_bin):
+        chrome_options.binary_location = chrome_bin
+    
     if headless:
         chrome_options.add_argument("--headless")
     
     driver = None
     try:
-        driver = webdriver.Chrome(options=chrome_options)
+        # Try to use system ChromeDriver first
+        chromedriver_path = os.environ.get('CHROMEDRIVER_PATH', '/usr/bin/chromedriver')
+        if os.path.exists(chromedriver_path):
+            service = Service(chromedriver_path)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+        else:
+            driver = webdriver.Chrome(options=chrome_options)
         
         print(f"Opening URL: {url}")
         driver.get(url)
@@ -531,10 +876,11 @@ def scroll_and_download_from_url(url, scroll_delay=2, headless=True, keep_browse
         
         if downloaded_files:
             images_dir, pdf_path = get_timestamp_paths(url)
+            final_pdf_path = create_pdf_from_images(downloaded_files, pdf_path)
             return {
                 'success': True,
                 'images_dir': images_dir,
-                'pdf_path': pdf_path,
+                'pdf_path': final_pdf_path,
                 'downloaded_count': len(downloaded_files),
                 'error': None
             }
@@ -581,12 +927,23 @@ def auto_scroll_page(url, scroll_delay=2, download_images=False, headless=False)
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     
+    # Use Chromium binary path in Docker
+    chrome_bin = os.environ.get('CHROME_BIN', '/usr/bin/chromium')
+    if os.path.exists(chrome_bin):
+        chrome_options.binary_location = chrome_bin
+    
     if headless:
         chrome_options.add_argument("--headless")
     
     driver = None
     try:
-        driver = webdriver.Chrome(options=chrome_options)
+        # Try to use system ChromeDriver first
+        chromedriver_path = os.environ.get('CHROMEDRIVER_PATH', '/usr/bin/chromedriver')
+        if os.path.exists(chromedriver_path):
+            service = Service(chromedriver_path)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+        else:
+            driver = webdriver.Chrome(options=chrome_options)
         
         print(f"Opening URL: {url}")
         driver.get(url)
